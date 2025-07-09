@@ -95,6 +95,20 @@ fn get_aws_region_from_config(
     section.get("region").map(std::borrow::ToOwned::to_owned)
 }
 
+fn parse_aws_role_arn(arn: &str) -> Option<String> {
+    // Parse ARN format: arn:aws:iam::ACCOUNT_ID:role/ROLE_NAME
+    let parts: Vec<&str> = arn.split(':').collect();
+    if parts.len() >= 6 && parts[0] == "arn" && parts[1] == "aws" && parts[2] == "iam" {
+        let account_id = parts[4];
+        let role_part = parts[5];
+        if role_part.starts_with("role/") {
+            let role_name = &role_part[5..]; // Remove "role/" prefix
+            return Some(format!("{}:{}", account_id, role_name));
+        }
+    }
+    None
+}
+
 fn get_aws_profile_and_region(
     context: &Context,
     aws_config: &AwsConfigFile,
@@ -107,9 +121,16 @@ fn get_aws_profile_and_region(
         "AWS_SSO_PROFILE",
     ];
     let region_env_vars = ["AWS_REGION", "AWS_DEFAULT_REGION"];
+
     let profile = profile_env_vars
         .iter()
-        .find_map(|env_var| context.get_env(env_var));
+        .find_map(|env_var| context.get_env(env_var))
+        .or_else(|| {
+            // Handle AWS_ROLE_ARN specially
+            context.get_env("AWS_ROLE_ARN")
+                .and_then(|arn| parse_aws_role_arn(&arn))
+        });
+
     let region = region_env_vars
         .iter()
         .find_map(|env_var| context.get_env(env_var));
@@ -455,6 +476,35 @@ mod tests {
         let expected = Some(format!(
             "on {}",
             Color::Yellow.bold().paint("☁️  astronauts-awsssocli ")
+        ));
+
+        assert_eq!(expected, actual);
+    }
+
+    #[test]
+    fn profile_set_from_aws_role_arn() {
+        let actual = ModuleRenderer::new("aws")
+            .env("AWS_ROLE_ARN", "arn:aws:iam::581617116291:role/Kube-Dev-Sysadmin")
+            .env("AWS_ACCESS_KEY_ID", "dummy")
+            .collect();
+        let expected = Some(format!(
+            "on {}",
+            Color::Yellow.bold().paint("☁️  581617116291:Kube-Dev-Sysadmin ")
+        ));
+
+        assert_eq!(expected, actual);
+    }
+
+    #[test]
+    fn profile_set_from_aws_role_arn_with_region() {
+        let actual = ModuleRenderer::new("aws")
+            .env("AWS_ROLE_ARN", "arn:aws:iam::581617116291:role/Kube-Dev-Sysadmin")
+            .env("AWS_REGION", "us-east-1")
+            .env("AWS_ACCESS_KEY_ID", "dummy")
+            .collect();
+        let expected = Some(format!(
+            "on {}",
+            Color::Yellow.bold().paint("☁️  581617116291:Kube-Dev-Sysadmin (us-east-1) ")
         ));
 
         assert_eq!(expected, actual);
